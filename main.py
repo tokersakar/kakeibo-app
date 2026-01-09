@@ -9,37 +9,30 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="わが家の資産管理", layout="wide", page_icon="💰")
 
 # ==========================================
-# 設定エリア（ここだけ書き換えてください）
+# 設定エリア（スプレッドシートURLのみ）
 # ==========================================
-# あなたのスプレッドシートのURLをここに貼ってください
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1CGZvOLZUzV-SSXs4mlXHnj29fvfq-7nsDCpSV-axuhU/edit?gid=0#gid=0"
-
-# ユーザーパスワード設定
-USERS = {
-    "夫": "0000",
-    "妻": "0000",
-}
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1CGZvOLZUzV-SSXs4mlXHnj29fvfq-7nsDCpSV-axuhU/edit?gid=0#gid=0" # ←あなたのURLのままでOK
 
 # ==========================================
 # スプレッドシート接続機能
 # ==========================================
 def get_gspread_client():
-    # secrets.toml から鍵情報を読み込む
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client
 
+# --- 資産データの読み書き ---
 def load_data():
     try:
         client = get_gspread_client()
-        sheet = client.open_by_url(SPREADSHEET_URL).sheet1
+        # 1枚目のシート（家計簿データ）を取得
+        sheet = client.open_by_url(SPREADSHEET_URL).get_worksheet(0)
         data = sheet.get_all_records()
         if not data:
             return pd.DataFrame(columns=["日付", "銀行名", "種類", "所有者", "金額", "メモ"])
         df = pd.DataFrame(data)
-        # 日付カラムを日付型に変換
         df["日付"] = pd.to_datetime(df["日付"]).dt.date
         return df
     except Exception as e:
@@ -49,23 +42,57 @@ def load_data():
 def save_data(df):
     try:
         client = get_gspread_client()
-        sheet = client.open_by_url(SPREADSHEET_URL).sheet1
-        
-        # DataFrameの日付を文字列に変換（JSONシリアライズ対策）
+        sheet = client.open_by_url(SPREADSHEET_URL).get_worksheet(0)
         save_df = df.copy()
         save_df["日付"] = save_df["日付"].astype(str)
-        
-        # スプレッドシートをクリアして書き込み
         sheet.clear()
-        # ヘッダー書き込み
         sheet.append_row(save_df.columns.tolist())
-        # データ書き込み
         sheet.append_rows(save_df.values.tolist())
     except Exception as e:
         st.error(f"データ保存エラー: {e}")
 
+# --- ユーザー設定（パスワード）の読み書き ---
+def load_users():
+    """user_configシートからユーザー情報を取得する"""
+    try:
+        client = get_gspread_client()
+        # "user_config" という名前のシートを探す
+        try:
+            sheet = client.open_by_url(SPREADSHEET_URL).worksheet("user_config")
+        except:
+            st.error("エラー: スプレッドシートに 'user_config' というシートが見つかりません。作成してください。")
+            return {}
+            
+        records = sheet.get_all_records()
+        # 辞書形式 {"夫": "0000", "妻": "1234"} に変換
+        user_dict = {row["ユーザー名"]: str(row["パスワード"]) for row in records}
+        return user_dict
+    except Exception as e:
+        st.error(f"ユーザー設定読み込みエラー: {e}")
+        return {}
+
+def update_password(username, new_password):
+    """パスワードを更新する"""
+    try:
+        client = get_gspread_client()
+        sheet = client.open_by_url(SPREADSHEET_URL).worksheet("user_config")
+        
+        # 全データを取得して、該当ユーザーのパスワードを書き換える
+        data = sheet.get_all_records()
+        
+        # スプレッドシートの行番号を探す（ヘッダーが1行目なので、データは2行目から。+2する）
+        for i, row in enumerate(data):
+            if row["ユーザー名"] == username:
+                # B列（2列目）を更新
+                sheet.update_cell(i + 2, 2, str(new_password))
+                return True
+        return False
+    except Exception as e:
+        st.error(f"パスワード更新エラー: {e}")
+        return False
+
 # ==========================================
-# ログイン機能のロジック
+# ログイン機能
 # ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -74,20 +101,37 @@ if 'current_user' not in st.session_state:
 
 def login():
     st.markdown("<h1 style='text-align: center;'>🔐 家計簿アプリ ログイン</h1>", unsafe_allow_html=True)
+    
+    # 最新のユーザー情報をロード
+    users_db = load_users()
+    
+    if not users_db:
+        st.stop() # ユーザー情報が取れなければ止める
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form"):
-            username = st.selectbox("ユーザーを選択", ["夫", "妻"])
+            username = st.selectbox("ユーザーを選択", list(users_db.keys()))
             password = st.text_input("パスワード", type="password")
             submit = st.form_submit_button("ログイン", use_container_width=True)
             
             if submit:
-                if password == USERS[username]:
+                # パスワード照合
+                if username in users_db and str(password) == str(users_db[username]):
                     st.session_state.logged_in = True
                     st.session_state.current_user = username
                     st.rerun()
                 else:
                     st.error("パスワードが違います")
+        
+        # パスワードを忘れた場合の案内
+        with st.expander("パスワードを忘れた場合"):
+            st.info("""
+            **初期化・確認方法：**
+            このアプリの管理用スプレッドシート（Google Sheets）を直接開いてください。
+            `user_config` というシートを見ると、現在のパスワードが書いてあります。
+            必要であれば、そのシートの数字を直接書き換えることでリセットできます。
+            """)
 
 def logout():
     st.session_state.logged_in = False
@@ -102,7 +146,6 @@ if not st.session_state.logged_in:
 else:
     # データロード
     full_df = load_data()
-    
     current_user = st.session_state.current_user
     
     # 権限設定
@@ -113,11 +156,13 @@ else:
         accessible_df = full_df[full_df["所有者"].isin(["妻", "夫婦"])]
         allowed_owners = ["妻", "夫婦"]
     else:
-        accessible_df = pd.DataFrame()
+        accessible_df = pd.DataFrame() # エラー回避
 
     # --- サイドバー ---
     with st.sidebar:
         st.write(f"👤 **{current_user}** でログイン中")
+        
+        # ログアウト
         if st.button("ログアウト", type="secondary"):
             logout()
         
@@ -125,20 +170,21 @@ else:
         st.title("メニュー")
         page = st.radio(
             "移動先", 
-            ["📊 ダッシュボード", "📝 データ管理"],
+            ["📊 ダッシュボード", "📝 データ管理", "🔑 パスワード変更"], # メニュー追加
             label_visibility="collapsed"
         )
         
-        st.divider()
-        st.write("### ⚙️ 表示設定")
-        filter_options = ["全員（自分＋夫婦）"] + allowed_owners
-        selected_filter = st.selectbox("表示範囲", filter_options)
-        
-        # フィルタリング
-        if selected_filter == "全員（自分＋夫婦）":
-            view_df = accessible_df
-        else:
-            view_df = accessible_df[accessible_df["所有者"] == selected_filter]
+        if page != "🔑 パスワード変更":
+            st.divider()
+            st.write("### ⚙️ 表示設定")
+            filter_options = ["全員（自分＋夫婦）"] + allowed_owners
+            selected_filter = st.selectbox("表示範囲", filter_options)
+            
+            # フィルタリング
+            if selected_filter == "全員（自分＋夫婦）":
+                view_df = accessible_df
+            else:
+                view_df = accessible_df[accessible_df["所有者"] == selected_filter]
 
     # ==========================================
     # ページ1: 📊 ダッシュボード
@@ -209,7 +255,6 @@ else:
         st.subheader("📋 データの修正・削除")
         st.info("編集後、「変更を保存」ボタンを押してください。")
         
-        # 編集用データ作成
         edit_df = view_df.sort_values("日付", ascending=False).copy()
         edit_df.insert(0, "削除", False)
         
@@ -225,14 +270,34 @@ else:
         )
         
         if st.button("変更を保存する", type="primary"):
-            # 1. 削除フラグのない行だけ残す
             to_keep = edited[~edited["削除"]].drop(columns=["削除"])
-            
-            # 2. 編集対象外のデータ（相手のデータ）を取得
             hidden_data = full_df[~full_df["所有者"].isin(allowed_owners)]
-            
-            # 3. 合体して保存
             final_df = pd.concat([hidden_data, to_keep], ignore_index=True)
             save_data(final_df)
             st.success("更新しました！")
             st.rerun()
+
+    # ==========================================
+    # ページ3: 🔑 パスワード変更
+    # ==========================================
+    elif page == "🔑 パスワード変更":
+        st.title("🔑 パスワード変更")
+        
+        st.info(f"現在ログイン中の **{current_user}** さんのパスワードを変更します。")
+        
+        with st.form("pwd_change_form"):
+            new_pwd = st.text_input("新しいパスワード", type="password")
+            new_pwd_confirm = st.text_input("新しいパスワード（確認用）", type="password")
+            submit_pwd = st.form_submit_button("変更する")
+            
+            if submit_pwd:
+                if new_pwd != new_pwd_confirm:
+                    st.error("パスワードが一致しません。")
+                elif new_pwd == "":
+                    st.error("パスワードを入力してください。")
+                else:
+                    # スプレッドシートを更新
+                    if update_password(current_user, new_pwd):
+                        st.success("パスワードを変更しました！次回から新しいパスワードでログインしてください。")
+                    else:
+                        st.error("変更に失敗しました。管理者へ連絡してください。")
