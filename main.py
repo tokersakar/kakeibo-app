@@ -11,7 +11,7 @@ st.set_page_config(page_title="わが家の資産管理", layout="wide", page_ic
 # ==========================================
 # 設定エリア
 # ==========================================
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/xxxxxxxxxxxxxxxx/edit" # ←あなたのURLのままでOK
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1CGZvOLZUzV-SSXs4mlXHnj29fvfq-7nsDCpSV-axuhU/edit?gid=0#gid=0" # ←あなたのURLのままでOK
 
 # ==========================================
 # スプレッドシート接続機能
